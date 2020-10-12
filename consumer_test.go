@@ -64,6 +64,49 @@ func TestConsumerOffsetManual(t *testing.T) {
 	broker0.Close()
 }
 
+// If `sarama.OffsetNewest` is passed as the initial offset then the first consumed
+// message is indeed corresponds to the offset that broker claims to be the
+// newest in its metadata response.
+func TestConsumersaramaOffsetNewest(t *testing.T) {
+	// Given
+	broker0 := sarama.NewMockBroker(t, 0)
+	broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetBroker(broker0.Addr(), broker0.BrokerID()).
+			SetLeader("my_topic", 0, broker0.BrokerID()),
+		"OffsetRequest": sarama.NewMockOffsetResponse(t).
+			SetOffset("my_topic", 0, sarama.OffsetNewest, 10).
+			SetOffset("my_topic", 0, sarama.OffsetOldest, 7),
+		"FetchRequest": sarama.NewMockFetchResponse(t, 1).
+			SetMessage("my_topic", 0, 9, testMsg).
+			SetMessage("my_topic", 0, 10, testMsg).
+			SetMessage("my_topic", 0, 11, testMsg).
+			SetHighWaterMark("my_topic", 0, 14).SetVersion(4),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	master, err := NewTransitioningConsumer([]string{broker0.Addr()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When
+	consumer, err := master.ConsumePartition("my_topic", 0, sarama.OffsetNewest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then
+	assertMessageOffset(t, <-consumer.Messages(), 10)
+	if hwmo := consumer.HighWaterMarkOffset(); hwmo != 14 {
+		t.Errorf("Expected high water mark offset 14, found %d", hwmo)
+	}
+
+	safeClose(t, consumer)
+	safeClose(t, master)
+	broker0.Close()
+}
+
 func assertMessageOffset(t *testing.T, msg *sarama.ConsumerMessage, expectedOffset int64) {
 	if msg.Offset != expectedOffset {
 		t.Errorf("Incorrect message offset: expected=%d, actual=%d", expectedOffset, msg.Offset)
