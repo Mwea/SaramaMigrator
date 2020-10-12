@@ -34,7 +34,8 @@ func TestConsumerOffsetManual(t *testing.T) {
 		"OffsetRequest": sarama.NewMockOffsetResponse(t).
 			SetOffset("my_topic", 0, sarama.OffsetOldest, 0).
 			SetOffset("my_topic", 0, sarama.OffsetNewest, 2345),
-		"FetchRequest": mockFetchResponse,
+		"FetchRequest":       mockFetchResponse,
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
 	})
 
 	// When

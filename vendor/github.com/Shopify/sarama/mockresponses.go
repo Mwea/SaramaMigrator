@@ -1119,3 +1119,84 @@ func (m *MockDescribeLogDirsResponse) For(reqBody versionedDecoder) encoderWithH
 	}
 	return resp
 }
+
+var apiVersions = []*ApiVersionsResponseBlock{
+	&ApiVersionsResponseBlock{
+		ApiKey:     18,
+		MinVersion: 0,
+		MaxVersion: 2,
+	},
+	&ApiVersionsResponseBlock{
+		ApiKey:     3,
+		MinVersion: 0,
+		MaxVersion: 5,
+	},
+	&ApiVersionsResponseBlock{
+		ApiKey:     9,
+		MinVersion: 0,
+		MaxVersion: 5,
+	},
+	&ApiVersionsResponseBlock{
+		ApiKey:     (&FetchResponse{}).key(),
+		MinVersion: 2,
+		MaxVersion: 4,
+	},
+	&ApiVersionsResponseBlock{
+		ApiKey:     (&ProduceResponse{}).key(),
+		MinVersion: 0,
+		MaxVersion: 11,
+	},
+	&ApiVersionsResponseBlock{
+		ApiKey:     (&OffsetCommitResponse{}).key(),
+		MinVersion: 0,
+		MaxVersion: 2,
+	},
+	&ApiVersionsResponseBlock{
+		ApiKey:     (&OffsetFetchResponse{}).key(),
+		MinVersion: 0,
+		MaxVersion: 1,
+	},
+	&ApiVersionsResponseBlock{
+		ApiKey:     (&OffsetResponse{}).key(),
+		MinVersion: 0,
+		MaxVersion: 1,
+	},
+}
+
+//ApiVersionsResponse is an api version response type
+type MockApiVersionsResponse struct {
+	Err         KError
+	ApiVersions []*ApiVersionsResponseBlock
+	t           TestReporter
+}
+
+func NewMockApiVersionsResponse(t TestReporter) *MockApiVersionsResponse {
+	return &MockApiVersionsResponse{
+		t:           t,
+		ApiVersions: make([]*ApiVersionsResponseBlock, 0),
+		Err:         ErrNoError,
+	}
+}
+
+func (m *MockApiVersionsResponse) AddApiVersionsResponseBlock(api, min, max int16) *MockApiVersionsResponse {
+	m.ApiVersions = append(m.ApiVersions, &ApiVersionsResponseBlock{
+		ApiKey:     api,
+		MinVersion: min,
+		MaxVersion: max,
+	})
+	return m
+}
+
+func (m *MockApiVersionsResponse) For(reqBody versionedDecoder) encoderWithHeader {
+	req := reqBody.(*ApiVersionsRequest)
+	if req.Version >= 3 {
+		return &ApiVersionsResponse{
+			Err:         35,
+			ApiVersions: apiVersions,
+		}
+	}
+	metadataResponse := &ApiVersionsResponse{
+		ApiVersions: apiVersions,
+	}
+	return metadataResponse
+}

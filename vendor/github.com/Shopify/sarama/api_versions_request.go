@@ -2,16 +2,7 @@ package sarama
 
 //ApiVersionsRequest ...
 type ApiVersionsRequest struct {
-	Version               int16
-	ClientSoftwareName    string
-	ClientSoftwareVersion string
-}
-
-func (a *ApiVersionsRequest) encode(pe packetEncoder) error {
-	pe.putString(a.ClientSoftwareName)
-	pe.putString(a.ClientSoftwareVersion)
-	pe.putInt16(a.Version)
-	return nil
+	Version int16
 }
 
 func (a *ApiVersionsRequest) encode(pe packetEncoder) error {
@@ -19,18 +10,7 @@ func (a *ApiVersionsRequest) encode(pe packetEncoder) error {
 }
 
 func (a *ApiVersionsRequest) decode(pd packetDecoder, version int16) (err error) {
-	if version >= 3 {
-		if s, err := pd.getCompactString(); err != nil {
-			return err
-		} else {
-			a.ClientSoftwareName = s
-		}
-		if s, err := pd.getCompactString(); err != nil {
-			return nil
-		} else {
-			a.ClientSoftwareVersion = string(s)
-		}
-	}
+	pd.getRawBytes(pd.remaining())
 	return nil
 }
 
