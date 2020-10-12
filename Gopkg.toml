@@ -1,0 +1,8 @@
+[[constraint]]
+  name = "github.com/Shopify/sarama"
+  version = "1.27.1"
+
+
+[[constraint]]
+  name = "github.com/confluentinc/confluent-kafka-go"
+  revision = "53193a43d488f3c1aabc5590a3976189cd341303"
