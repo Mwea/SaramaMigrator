@@ -20,6 +20,10 @@ func newTransitioningPartitionConsumer(topic string, partition int32, offset int
 	if err != nil {
 		return nil, err
 	}
+	offset, err = pickOffset(consumer, topic, partition, offset)
+	if err != nil {
+		return nil, err
+	}
 	err = consumer.Assign([]kafka.TopicPartition{kafka.TopicPartition{
 		Topic:     &topic,
 		Partition: partition,
@@ -42,6 +46,23 @@ func newTransitioningPartitionConsumer(topic string, partition int32, offset int
 	return obj, nil
 }
 
+func pickOffset(consumer *kafka.Consumer, topic string, partition int32, offset int64) (int64, error) {
+	low, high, err := consumer.QueryWatermarkOffsets(topic, partition, 1000)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case offset == sarama.OffsetNewest:
+		return high, nil
+	case offset == sarama.OffsetOldest:
+		return low, nil
+	case offset >= low && offset <= high:
+		return offset, nil
+	default:
+		return 0, sarama.ErrOffsetOutOfRange
+	}
+}
+
 func (t *TransitioningPartitionConsumer) run() {
 	t.stopper.Add(1)
 	go func() {
@@ -50,11 +71,17 @@ func (t *TransitioningPartitionConsumer) run() {
 			if t.stopper.Stopped() {
 				return
 			}
-			msg, err := t.ckgConsumer.ReadMessage(sarama.NewConfig().Consumer.MaxWaitTime)
-			if err != nil {
+			ev := t.ckgConsumer.Poll(int(sarama.NewConfig().Consumer.MaxWaitTime.Milliseconds()))
+			switch e := ev.(type) {
+			case *kafka.Message:
+				if e.TopicPartition.Error != nil {
+					continue
+				}
+				t.messages <- t.kafkaMessageToSaramaMessage(e)
+			case kafka.Error:
 				continue
-			} else if msg != nil {
-				t.messages <- t.kafkaMessageToSaramaMessage(msg)
+			default:
+				// Ignore other event types
 			}
 		}
 	}()
@@ -65,6 +92,10 @@ func (t TransitioningPartitionConsumer) AsyncClose() {
 }
 
 func (t TransitioningPartitionConsumer) Close() error {
+	if err := t.ckgConsumer.Unassign(); err != nil {
+		return err
+	}
+
 	t.stopper.StopAndWait()
 	return nil
 }
@@ -78,7 +109,11 @@ func (t TransitioningPartitionConsumer) Errors() <-chan *sarama.ConsumerError {
 }
 
 func (t TransitioningPartitionConsumer) HighWaterMarkOffset() int64 {
-	panic("implement me")
+	_, high, err := t.ckgConsumer.GetWatermarkOffsets(t.topic, t.partition)
+	if err != nil {
+		return 0
+	}
+	return high
 }
 
 func (t *TransitioningPartitionConsumer) kafkaMessageToSaramaMessage(msg *kafka.Message) *sarama.ConsumerMessage {

@@ -67,15 +67,8 @@ func (t *TransitioningConsumer) HighWaterMarks() map[string]map[int32]int64 {
 // Close shuts down the consumer. It must be called after all child
 // PartitionConsumers have already been closed.
 func (t *TransitioningConsumer) Close() error {
-	t.lock.Lock()
-	defer t.lock.Unlock()
-	for _, partitionChild := range t.children {
-		for _, child := range partitionChild {
-			err := child.Close()
-			if err != nil {
-				return err
-			}
-		}
+	if err := t.ckgConsumer.Unassign(); err != nil {
+		return err
 	}
 	return nil
 }
