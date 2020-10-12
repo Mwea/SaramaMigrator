@@ -13,6 +13,7 @@ type TransitioningPartitionConsumer struct {
 	errors      chan *sarama.ConsumerError
 	ckgConsumer *kafka.Consumer
 	stopper     *Stopper
+	parent      *TransitioningConsumer
 }
 
 func newTransitioningPartitionConsumer(topic string, partition int32, offset int64, configMap *kafka.ConfigMap) (*TransitioningPartitionConsumer, error) {
@@ -87,11 +88,12 @@ func (t *TransitioningPartitionConsumer) run() {
 	}()
 }
 
-func (t TransitioningPartitionConsumer) AsyncClose() {
+func (t *TransitioningPartitionConsumer) AsyncClose() {
 	t.stopper.StopAndWait()
 }
 
-func (t TransitioningPartitionConsumer) Close() error {
+func (t *TransitioningPartitionConsumer) Close() error {
+	t.parent.removeChild(t)
 	if err := t.ckgConsumer.Unassign(); err != nil {
 		return err
 	}
@@ -100,15 +102,15 @@ func (t TransitioningPartitionConsumer) Close() error {
 	return nil
 }
 
-func (t TransitioningPartitionConsumer) Messages() <-chan *sarama.ConsumerMessage {
+func (t *TransitioningPartitionConsumer) Messages() <-chan *sarama.ConsumerMessage {
 	return t.messages
 }
 
-func (t TransitioningPartitionConsumer) Errors() <-chan *sarama.ConsumerError {
+func (t *TransitioningPartitionConsumer) Errors() <-chan *sarama.ConsumerError {
 	return t.errors
 }
 
-func (t TransitioningPartitionConsumer) HighWaterMarkOffset() int64 {
+func (t *TransitioningPartitionConsumer) HighWaterMarkOffset() int64 {
 	_, high, err := t.ckgConsumer.GetWatermarkOffsets(t.topic, t.partition)
 	if err != nil {
 		return 0

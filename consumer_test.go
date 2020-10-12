@@ -107,6 +107,86 @@ func TestConsumersaramaOffsetNewest(t *testing.T) {
 	broker0.Close()
 }
 
+// It is possible to close a partition consumer and create the same anew.
+func TestConsumerRecreate(t *testing.T) {
+	// Given
+	broker0 := sarama.NewMockBroker(t, 0)
+	broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetBroker(broker0.Addr(), broker0.BrokerID()).
+			SetLeader("my_topic", 0, broker0.BrokerID()),
+		"OffsetRequest": sarama.NewMockOffsetResponse(t).
+			SetOffset("my_topic", 0, sarama.OffsetOldest, 0).
+			SetOffset("my_topic", 0, sarama.OffsetNewest, 1000),
+		"FetchRequest": sarama.NewMockFetchResponse(t, 1).
+			SetMessage("my_topic", 0, 10, testMsg).SetVersion(4),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	c, err := NewTransitioningConsumer([]string{broker0.Addr()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pc, err := c.ConsumePartition("my_topic", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMessageOffset(t, <-pc.Messages(), 10)
+
+	// When
+	safeClose(t, pc)
+	pc, err = c.ConsumePartition("my_topic", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then
+	assertMessageOffset(t, <-pc.Messages(), 10)
+
+	safeClose(t, pc)
+	safeClose(t, c)
+	broker0.Close()
+}
+
+// An attempt to consume the same partition twice should fail.
+func TestConsumerDuplicate(t *testing.T) {
+	// Given
+	broker0 := sarama.NewMockBroker(t, 0)
+	broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetBroker(broker0.Addr(), broker0.BrokerID()).
+			SetLeader("my_topic", 0, broker0.BrokerID()),
+		"OffsetRequest": sarama.NewMockOffsetResponse(t).
+			SetOffset("my_topic", 0, sarama.OffsetOldest, 0).
+			SetOffset("my_topic", 0, sarama.OffsetNewest, 1000),
+		"FetchRequest":       sarama.NewMockFetchResponse(t, 1),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	c, err := NewTransitioningConsumer([]string{broker0.Addr()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pc1, err := c.ConsumePartition("my_topic", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When
+	pc2, err := c.ConsumePartition("my_topic", 0, 0)
+
+	// Then
+	if pc2 != nil || err != sarama.ConfigurationError("That topic/partition is already being consumed") {
+		t.Fatal("A partition cannot be consumed twice at the same time")
+	}
+
+	safeClose(t, pc1)
+	safeClose(t, c)
+	broker0.Close()
+}
+
 func assertMessageOffset(t *testing.T, msg *sarama.ConsumerMessage, expectedOffset int64) {
 	if msg.Offset != expectedOffset {
 		t.Errorf("Incorrect message offset: expected=%d, actual=%d", expectedOffset, msg.Offset)

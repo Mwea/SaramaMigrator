@@ -90,5 +90,13 @@ func (t *TransitioningConsumer) addChild(child *TransitioningPartitionConsumer) 
 	}
 
 	topicChildren[child.partition] = child
+	child.parent = t
 	return nil
+}
+
+func (t *TransitioningConsumer) removeChild(child *TransitioningPartitionConsumer) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	delete(t.children[child.topic], child.partition)
 }
