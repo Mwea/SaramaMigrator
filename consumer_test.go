@@ -57,7 +57,6 @@ func TestConsumerOffsetManual(t *testing.T) {
 		case err := <-consumer.Errors():
 			t.Error(err)
 		}
-		return
 	}
 
 	safeClose(t, consumer)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/Shopify/sarama"
 	"github.com/confluentinc/confluent-kafka-go/kafka"
+	"strings"
 	"sync"
 )
 
@@ -14,8 +15,19 @@ type TransitioningConsumer struct {
 	children    map[string]map[int32]*TransitioningPartitionConsumer
 }
 
-func NewTransitioningConsumer(strings []string, t interface{}) (sarama.Consumer, error) {
-	return nil, fmt.Errorf("implement me")
+func NewTransitioningConsumer(addrs []string, t interface{}) (sarama.Consumer, error) {
+	configMap := &kafka.ConfigMap{
+		"bootstrap.servers":  strings.Join(addrs, ","),
+		"group.id":           "toto",
+		"debug":              "all",
+		"log_level":          7,
+		"enable.auto.commit": false,
+	}
+	consumer, err := kafka.NewConsumer(configMap)
+	if err != nil {
+		return nil, err
+	}
+	return &TransitioningConsumer{ckgConsumer: consumer, configMap: configMap}, nil
 }
 
 // Topics returns the set of available topics as retrieved from the cluster
@@ -55,7 +67,17 @@ func (t *TransitioningConsumer) HighWaterMarks() map[string]map[int32]int64 {
 // Close shuts down the consumer. It must be called after all child
 // PartitionConsumers have already been closed.
 func (t *TransitioningConsumer) Close() error {
-	return fmt.Errorf("implement me")
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	for _, partitionChild := range t.children {
+		for _, child := range partitionChild {
+			err := child.Close()
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (t *TransitioningConsumer) addChild(child *TransitioningPartitionConsumer) error {
