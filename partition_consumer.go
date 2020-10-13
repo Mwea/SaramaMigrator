@@ -1,6 +1,7 @@
 package SaramaMigrator
 
 import (
+	"fmt"
 	"github.com/Shopify/sarama"
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 	"time"
@@ -86,25 +87,37 @@ func (t *TransitioningPartitionConsumer) run() {
 				}
 				t.messages <- t.kafkaMessageToSaramaMessage(e)
 			case kafka.Error:
-				t.errors <- t.kafkaErrorToSaramaError(e)
+				switch sarama.KError(e.Code()) {
+				case sarama.ErrOffsetOutOfRange:
+					t.AsyncClose()
+				default:
+					t.errors <- t.kafkaErrorToSaramaError(e)
+				}
 			default:
+				fmt.Println(e)
 				// Ignore other event types
 			}
 		}
 	}()
+
 }
 
 func (t *TransitioningPartitionConsumer) AsyncClose() {
-	t.stopper.StopAndWait()
+	if t.stopper.Stopped() {
+		return
+	}
+	t.parent.removeChild(t)
+	if err := t.ckgConsumer.Unassign(); err != nil {
+		return
+	}
+	t.stopper.Stop()
+	t.ckgConsumer.Close()
+	close(t.messages)
+	close(t.errors)
 }
 
 func (t *TransitioningPartitionConsumer) Close() error {
-	t.parent.removeChild(t)
-	if err := t.ckgConsumer.Unassign(); err != nil {
-		return err
-	}
-
-	t.stopper.StopAndWait()
+	t.AsyncClose()
 	return nil
 }
 

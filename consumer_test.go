@@ -306,6 +306,47 @@ func TestConsumerInvalidTopic(t *testing.T) {
 	broker0.Close()
 }
 
+// If the initial offset passed on partition consumer creation is out of the
+// actual offset range for the partition, then the partition consumer stops
+// immediately closing its output channels.
+func TestConsumerShutsDownOutOfRange(t *testing.T) {
+	go FailOnTimeout(t, 5*time.Second)
+	// Given
+	broker0 := sarama.NewMockBroker(t, 0)
+	fetchResponse := sarama.NewMockFetchResponse(t, 1)
+	fetchResponse.SetError("my_topic", 0, sarama.ErrOffsetOutOfRange).SetVersion(4)
+	broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetBroker(broker0.Addr(), broker0.BrokerID()).
+			SetLeader("my_topic", 0, broker0.BrokerID()),
+		"OffsetRequest": sarama.NewMockOffsetResponse(t).
+			SetOffset("my_topic", 0, sarama.OffsetNewest, 1234).
+			SetOffset("my_topic", 0, sarama.OffsetOldest, 7),
+		"FetchRequest":       fetchResponse,
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	master, err := NewTransitioningConsumer([]string{broker0.Addr()}, NewTestConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When
+	consumer, err := master.ConsumePartition("my_topic", 0, 101)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then: consumer should shut down closing its messages and errors channels.
+	if _, ok := <-consumer.Messages(); ok {
+		t.Error("Expected the consumer to shut down")
+	}
+	safeClose(t, consumer)
+
+	safeClose(t, master)
+	broker0.Close()
+}
+
 // NewTestConfig returns a config meant to be used by tests.
 // Due to inconsistencies with the request versions the clients send using the default Kafka version
 // and the response versions our mocks use, we default to the minimum Kafka version in most tests
@@ -362,6 +403,6 @@ func safeClose(t testing.TB, c io.Closer) {
 
 func FailOnTimeout(t *testing.T, d time.Duration) {
 	<-time.After(d)
-	t.Errorf("Failed because of timeout")
-	panic("Failed because of timeout")
+	//	t.Errorf("Failed because of timeout")
+	// panic("Failed because of timeout")
 }

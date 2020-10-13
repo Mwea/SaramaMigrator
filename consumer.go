@@ -22,6 +22,7 @@ func NewTransitioningConsumer(addrs []string, t interface{}) (sarama.Consumer, e
 		"debug":              "all",
 		"log_level":          7,
 		"enable.auto.commit": false,
+		"auto.offset.reset":  "error",
 	}
 	consumer, err := kafka.NewConsumer(configMap)
 	if err != nil {
