@@ -146,6 +146,9 @@ func (t *TransitioningPartitionConsumer) kafkaMessageToSaramaMessage(msg *kafka.
 		}
 		headers = append(headers, newHeader)
 	}
+	if msg.TimestampType == kafka.TimestampNotAvailable {
+		msg.Timestamp = time.Time{}
+	}
 	return &sarama.ConsumerMessage{
 		Headers:        headers,
 		Timestamp:      msg.Timestamp,

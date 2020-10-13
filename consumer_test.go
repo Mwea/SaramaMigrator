@@ -473,6 +473,271 @@ func TestConsumerReceivingFetchResponseWithTooOldRecords(t *testing.T) {
 	broker0.Close()
 }
 
+func TestConsumerNonSequentialOffsets(t *testing.T) {
+	// Given
+	legacyFetchResponse := &sarama.FetchResponse{Version: 4}
+	legacyFetchResponse.AddMessage("my_topic", 0, nil, testMsg, 5)
+	legacyFetchResponse.AddMessage("my_topic", 0, nil, testMsg, 7)
+	legacyFetchResponse.AddMessage("my_topic", 0, nil, testMsg, 11)
+	newFetchResponse := &sarama.FetchResponse{Version: 4}
+	newFetchResponse.AddRecord("my_topic", 0, nil, testMsg, 5)
+	newFetchResponse.AddRecord("my_topic", 0, nil, testMsg, 7)
+	newFetchResponse.AddRecord("my_topic", 0, nil, testMsg, 11)
+	newFetchResponse.SetLastOffsetDelta("my_topic", 0, 11)
+	newFetchResponse.SetLastStableOffset("my_topic", 0, 11)
+	for _, fetchResponse1 := range []*sarama.FetchResponse{legacyFetchResponse, newFetchResponse} {
+		cfg := NewTestConfig()
+
+		broker0 := sarama.NewMockBroker(t, 0)
+		fetchResponse2 := &sarama.FetchResponse{Version: fetchResponse1.Version}
+		fetchResponse2.AddError("my_topic", 0, sarama.ErrNoError)
+		broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+			"MetadataRequest": sarama.NewMockMetadataResponse(t).
+				SetBroker(broker0.Addr(), broker0.BrokerID()).
+				SetLeader("my_topic", 0, broker0.BrokerID()),
+			"OffsetRequest": sarama.NewMockOffsetResponse(t).
+				SetOffset("my_topic", 0, sarama.OffsetNewest, 1234).
+				SetOffset("my_topic", 0, sarama.OffsetOldest, 0),
+			"FetchRequest":       sarama.NewMockSequence(fetchResponse1, fetchResponse2),
+			"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+		})
+
+		master, err := NewTransitioningConsumer([]string{broker0.Addr()}, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// When
+		consumer, err := master.ConsumePartition("my_topic", 0, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Then: messages with offsets 1 and 2 are not returned even though they
+		// are present in the response.
+		assertMessageOffset(t, <-consumer.Messages(), 5)
+		assertMessageOffset(t, <-consumer.Messages(), 7)
+		assertMessageOffset(t, <-consumer.Messages(), 11)
+
+		safeClose(t, consumer)
+		safeClose(t, master)
+		broker0.Close()
+	}
+}
+
+// TODO
+func TestConsumerOffsetOutOfRange(t *testing.T) {
+	// Given
+	broker0 := sarama.NewMockBroker(t, 2)
+	broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetBroker(broker0.Addr(), broker0.BrokerID()).
+			SetLeader("my_topic", 0, broker0.BrokerID()),
+		"OffsetRequest": sarama.NewMockOffsetResponse(t).
+			SetOffset("my_topic", 0, sarama.OffsetNewest, 1234).
+			SetOffset("my_topic", 0, sarama.OffsetOldest, 2345),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	master, err := NewTransitioningConsumer([]string{broker0.Addr()}, NewTestConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When/Then
+	if _, err := master.ConsumePartition("my_topic", 0, 0); err != sarama.ErrOffsetOutOfRange {
+		t.Fatal("Should return sarama.ErrOffsetOutOfRange, got:", err)
+	}
+	if _, err := master.ConsumePartition("my_topic", 0, 3456); err != sarama.ErrOffsetOutOfRange {
+		t.Fatal("Should return sarama.ErrOffsetOutOfRange, got:", err)
+	}
+	if _, err := master.ConsumePartition("my_topic", 0, -3); err != sarama.ErrOffsetOutOfRange {
+		t.Fatal("Should return sarama.ErrOffsetOutOfRange, got:", err)
+	}
+
+	safeClose(t, master)
+	broker0.Close()
+}
+
+// TODO
+func TestConsumerTimestamps(t *testing.T) {
+	now := time.Now().Truncate(time.Millisecond)
+	type testMessage struct {
+		key       Encoder
+		offset    int64
+		timestamp time.Time
+	}
+	for _, d := range []struct {
+		kversion          sarama.KafkaVersion
+		logAppendTime     bool
+		messages          []testMessage
+		expectedTimestamp []time.Time
+	}{
+		{sarama.MinVersion, false, []testMessage{
+			{testMsg, 1, now},
+			{testMsg, 2, now},
+		}, []time.Time{time.Time{}, time.Time{}}},
+		{sarama.V0_9_0_0, false, []testMessage{
+			{testMsg, 1, now},
+			{testMsg, 2, now},
+		}, []time.Time{time.Time{}, time.Time{}}},
+		{sarama.V0_10_0_0, false, []testMessage{
+			{testMsg, 1, now},
+			{testMsg, 2, now},
+		}, []time.Time{time.Time{}, time.Time{}}},
+		{sarama.V0_10_2_1, false, []testMessage{
+			{testMsg, 1, now.Add(time.Second)},
+			{testMsg, 2, now.Add(2 * time.Second)},
+		}, []time.Time{now.Add(time.Second), now.Add(2 * time.Second)}},
+		{sarama.V0_10_2_1, true, []testMessage{
+			{testMsg, 1, now.Add(time.Second)},
+			{testMsg, 2, now.Add(2 * time.Second)},
+		}, []time.Time{now, now}},
+		{sarama.V0_11_0_0, false, []testMessage{
+			{testMsg, 1, now.Add(time.Second)},
+			{testMsg, 2, now.Add(2 * time.Second)},
+		}, []time.Time{now.Add(time.Second), now.Add(2 * time.Second)}},
+		{sarama.V0_11_0_0, true, []testMessage{
+			{testMsg, 1, now.Add(time.Second)},
+			{testMsg, 2, now.Add(2 * time.Second)},
+		}, []time.Time{now, now}},
+	} {
+		var fr *sarama.FetchResponse
+		cfg := NewTestConfig()
+		cfg.Version = d.kversion
+		switch {
+		case d.kversion.IsAtLeast(sarama.V0_11_0_0):
+			fr = &sarama.FetchResponse{Version: 4, LogAppendTime: d.logAppendTime, Timestamp: now}
+			for _, m := range d.messages {
+				fr.AddRecordWithTimestamp("my_topic", 0, m.key, testMsg, m.offset, m.timestamp)
+			}
+			fr.SetLastOffsetDelta("my_topic", 0, 2)
+			fr.SetLastStableOffset("my_topic", 0, 2)
+		case d.kversion.IsAtLeast(sarama.V0_10_1_0):
+			fr = &sarama.FetchResponse{Version: 3, LogAppendTime: d.logAppendTime, Timestamp: now}
+			for _, m := range d.messages {
+				fr.AddMessageWithTimestamp("my_topic", 0, m.key, testMsg, m.offset, m.timestamp, 1)
+			}
+		default:
+			var version int16
+			switch {
+			case d.kversion.IsAtLeast(sarama.V0_10_0_0):
+				version = 2
+			case d.kversion.IsAtLeast(sarama.V0_9_0_0):
+				version = 1
+			}
+			fr = &sarama.FetchResponse{Version: version}
+			for _, m := range d.messages {
+				fr.AddMessageWithTimestamp("my_topic", 0, m.key, testMsg, m.offset, m.timestamp, 0)
+			}
+		}
+
+		broker0 := sarama.NewMockBroker(t, 0)
+		broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+			"MetadataRequest": sarama.NewMockMetadataResponse(t).
+				SetBroker(broker0.Addr(), broker0.BrokerID()).
+				SetLeader("my_topic", 0, broker0.BrokerID()),
+			"OffsetRequest": sarama.NewMockOffsetResponse(t).
+				SetOffset("my_topic", 0, sarama.OffsetNewest, 1234).
+				SetOffset("my_topic", 0, sarama.OffsetOldest, 0),
+			"FetchRequest":       sarama.NewMockSequence(fr),
+			"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t).AddApiVersionsResponseBlock(1, 0, fr.Version),
+		})
+
+		master, err := NewTransitioningConsumer([]string{broker0.Addr()}, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		consumer, err := master.ConsumePartition("my_topic", 0, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for i, ts := range d.expectedTimestamp {
+			select {
+			case msg := <-consumer.Messages():
+				assertMessageOffset(t, msg, int64(i)+1)
+				if msg.Timestamp != ts {
+					t.Errorf("Wrong timestamp (kversion:%v, logAppendTime:%v): got: %v, want: %v",
+						d.kversion, d.logAppendTime, msg.Timestamp, ts)
+				}
+			case err := <-consumer.Errors():
+				t.Fatal(err)
+			}
+		}
+
+		safeClose(t, consumer)
+		safeClose(t, master)
+		broker0.Close()
+	}
+}
+
+// When set to sarama.ReadCommitted, no uncommitted message should be available in messages channel
+// TODO
+func TestExcludeUncommitted(t *testing.T) {
+	// Given
+	broker0 := sarama.NewMockBroker(t, 0)
+
+	fetchResponse := &sarama.FetchResponse{
+		Version: 4,
+		Blocks: map[string]map[int32]*sarama.FetchResponseBlock{"my_topic": {0: {
+			AbortedTransactions: []*sarama.AbortedTransaction{{ProducerID: 7, FirstOffset: 1235}},
+		}}},
+	}
+	fetchResponse.AddRecordBatch("my_topic", 0, nil, testMsg, 1234, 7, true)          // committed msg
+	fetchResponse.AddRecordBatch("my_topic", 0, nil, testMsg, 1235, 7, true)          // uncommitted msg
+	fetchResponse.AddRecordBatch("my_topic", 0, nil, testMsg, 1236, 7, true)          // uncommitted msg
+	fetchResponse.AddControlRecord("my_topic", 0, 1237, 7, sarama.ControlRecordAbort) // abort control record
+	fetchResponse.AddRecordBatch("my_topic", 0, nil, testMsg, 1238, 7, true)          // committed msg
+
+	broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetBroker(broker0.Addr(), broker0.BrokerID()).
+			SetLeader("my_topic", 0, broker0.BrokerID()),
+		"OffsetRequest": sarama.NewMockOffsetResponse(t).
+			SetVersion(1).
+			SetOffset("my_topic", 0, sarama.OffsetOldest, 0).
+			SetOffset("my_topic", 0, sarama.OffsetNewest, 1237),
+		"FetchRequest":       sarama.NewMockWrapper(fetchResponse),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	cfg := NewTestConfig()
+	cfg.Consumer.Return.Errors = true
+	cfg.Version = sarama.V0_11_0_0
+	cfg.Consumer.IsolationLevel = sarama.ReadCommitted
+
+	// When
+	master, err := NewTransitioningConsumer([]string{broker0.Addr()}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	consumer, err := master.ConsumePartition("my_topic", 0, 1234)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then: only the 2 committed messages are returned
+	select {
+	case message := <-consumer.Messages():
+		assertMessageOffset(t, message, int64(1234))
+	case err := <-consumer.Errors():
+		t.Error(err)
+	}
+	select {
+	case message := <-consumer.Messages():
+		assertMessageOffset(t, message, int64(1238))
+	case err := <-consumer.Errors():
+		t.Error(err)
+	}
+
+	safeClose(t, consumer)
+	safeClose(t, master)
+	broker0.Close()
+}
+
 // NewTestConfig returns a config meant to be used by tests.
 // Due to inconsistencies with the request versions the clients send using the default Kafka version
 // and the response versions our mocks use, we default to the minimum Kafka version in most tests
