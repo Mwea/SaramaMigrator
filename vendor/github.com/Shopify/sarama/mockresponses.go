@@ -268,11 +268,13 @@ type MockFetchResponse struct {
 	t              TestReporter
 	batchSize      int
 	version        int16
+	errors         map[string]map[int32]KError
 }
 
 func NewMockFetchResponse(t TestReporter, batchSize int) *MockFetchResponse {
 	return &MockFetchResponse{
 		messages:       make(map[string]map[int32]map[int64]Encoder),
+		errors:         make(map[string]map[int32]KError),
 		highWaterMarks: make(map[string]map[int32]int64),
 		t:              t,
 		batchSize:      batchSize,
@@ -296,6 +298,20 @@ func (mfr *MockFetchResponse) SetMessage(topic string, partition int32, offset i
 		partitions[partition] = messages
 	}
 	messages[offset] = msg
+	return mfr
+}
+
+func (mfr *MockFetchResponse) SetError(topic string, partition int32, kError KError) *MockFetchResponse {
+	partitions := mfr.errors[topic]
+	if partitions == nil {
+		partitions = make(map[int32]KError)
+		mfr.errors[topic] = partitions
+	}
+	_, ok := partitions[partition]
+	if !ok {
+		partitions[partition] = kError
+	}
+
 	return mfr
 }
 
@@ -332,6 +348,9 @@ func (mfr *MockFetchResponse) For(reqBody versionedDecoder) encoderWithHeader {
 				res.AddError(topic, partition, ErrNoError)
 				fb = res.GetBlock(topic, partition)
 			}
+			if err := mfr.getError(topic, partition); err != ErrNoError {
+				fb.Err = err
+			}
 			fb.HighWaterMarkOffset = mfr.getHighWaterMark(topic, partition)
 		}
 	}
@@ -360,6 +379,18 @@ func (mfr *MockFetchResponse) getMessageCount(topic string, partition int32) int
 		return 0
 	}
 	return len(messages)
+}
+
+func (mfr *MockFetchResponse) getError(topic string, partition int32) KError {
+	partitions := mfr.errors[topic]
+	if partitions == nil {
+		return 0
+	}
+	err, ok := partitions[partition]
+	if !ok {
+		return ErrNoError
+	}
+	return err
 }
 
 func (mfr *MockFetchResponse) getHighWaterMark(topic string, partition int32) int64 {
