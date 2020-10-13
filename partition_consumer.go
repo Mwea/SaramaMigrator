@@ -74,6 +74,9 @@ func pickOffset(consumer *kafka.Consumer, topic string, partition int32, offset 
 func (t *TransitioningPartitionConsumer) run() {
 	t.stopper.Add(1)
 	go func() {
+		defer t.ckgConsumer.Close()
+		defer close(t.messages)
+		defer close(t.errors)
 		defer t.stopper.Done()
 		for {
 			if t.stopper.Stopped() {
@@ -111,9 +114,6 @@ func (t *TransitioningPartitionConsumer) AsyncClose() {
 		return
 	}
 	t.stopper.Stop()
-	t.ckgConsumer.Close()
-	close(t.messages)
-	close(t.errors)
 }
 
 func (t *TransitioningPartitionConsumer) Close() error {

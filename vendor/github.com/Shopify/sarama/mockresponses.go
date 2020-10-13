@@ -2,6 +2,7 @@ package sarama
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -336,10 +337,16 @@ func (mfr *MockFetchResponse) For(reqBody versionedDecoder) encoderWithHeader {
 			offset := initialOffset
 			messages := mfr.getMessages(topic, partition)
 			if messages != nil {
-				for mOffset, message := range messages {
+				var offsetsToAdd []int
+				for mOffset, _ := range messages {
 					if mOffset >= offset {
-						res.AddMessage(topic, partition, nil, message, mOffset)
+						offsetsToAdd = append(offsetsToAdd, int(mOffset))
 					}
+				}
+				sort.Ints(offsetsToAdd)
+				for _, offsetToAdd := range offsetsToAdd {
+					message := mfr.getMessage(topic, partition, int64(offsetToAdd))
+					res.AddMessage(topic, partition, nil, message, int64(offsetToAdd))
 				}
 			}
 

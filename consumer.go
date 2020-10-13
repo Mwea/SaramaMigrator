@@ -71,7 +71,7 @@ func (t *TransitioningConsumer) Close() error {
 	if err := t.ckgConsumer.Unassign(); err != nil {
 		return err
 	}
-	return nil
+	return t.ckgConsumer.Close()
 }
 
 func (t *TransitioningConsumer) addChild(child *TransitioningPartitionConsumer) error {
