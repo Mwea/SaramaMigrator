@@ -1187,11 +1187,6 @@ var apiVersions = []*ApiVersionsResponseBlock{
 		MaxVersion: 5,
 	},
 	&ApiVersionsResponseBlock{
-		ApiKey:     (&FetchResponse{}).key(),
-		MinVersion: 2,
-		MaxVersion: 4,
-	},
-	&ApiVersionsResponseBlock{
 		ApiKey:     (&ProduceResponse{}).key(),
 		MinVersion: 0,
 		MaxVersion: 11,
@@ -1199,17 +1194,22 @@ var apiVersions = []*ApiVersionsResponseBlock{
 	&ApiVersionsResponseBlock{
 		ApiKey:     (&OffsetCommitResponse{}).key(),
 		MinVersion: 0,
-		MaxVersion: 2,
+		MaxVersion: 3,
 	},
 	&ApiVersionsResponseBlock{
 		ApiKey:     (&OffsetFetchResponse{}).key(),
 		MinVersion: 0,
-		MaxVersion: 1,
+		MaxVersion: 3,
 	},
 	&ApiVersionsResponseBlock{
 		ApiKey:     (&OffsetResponse{}).key(),
 		MinVersion: 0,
-		MaxVersion: 1,
+		MaxVersion: 2,
+	},
+	&ApiVersionsResponseBlock{
+		ApiKey:     (&FetchResponse{}).key(),
+		MinVersion: 0,
+		MaxVersion: 4,
 	},
 }
 
@@ -1223,12 +1223,22 @@ type MockApiVersionsResponse struct {
 func NewMockApiVersionsResponse(t TestReporter) *MockApiVersionsResponse {
 	return &MockApiVersionsResponse{
 		t:           t,
-		ApiVersions: make([]*ApiVersionsResponseBlock, 0),
+		ApiVersions: apiVersions,
 		Err:         ErrNoError,
 	}
 }
 
+func remove(s []*ApiVersionsResponseBlock, i int) []*ApiVersionsResponseBlock {
+	s[len(s)-1], s[i] = s[i], s[len(s)-1]
+	return s[:len(s)-1]
+}
+
 func (m *MockApiVersionsResponse) AddApiVersionsResponseBlock(api, min, max int16) *MockApiVersionsResponse {
+	for i, apiVersions := range m.ApiVersions {
+		if apiVersions.ApiKey == api {
+			m.ApiVersions = remove(m.ApiVersions, i)
+		}
+	}
 	m.ApiVersions = append(m.ApiVersions, &ApiVersionsResponseBlock{
 		ApiKey:     api,
 		MinVersion: min,
