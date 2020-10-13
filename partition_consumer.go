@@ -80,7 +80,7 @@ func (t *TransitioningPartitionConsumer) run() {
 				}
 				t.messages <- t.kafkaMessageToSaramaMessage(e)
 			case kafka.Error:
-				continue
+				t.errors <- t.kafkaErrorToSaramaError(e)
 			default:
 				// Ignore other event types
 			}
@@ -137,4 +137,13 @@ func (t *TransitioningPartitionConsumer) kafkaMessageToSaramaMessage(msg *kafka.
 		Partition:      msg.TopicPartition.Partition,
 		Offset:         int64(msg.TopicPartition.Offset),
 	}
+}
+
+func (t *TransitioningPartitionConsumer) kafkaErrorToSaramaError(e kafka.Error) *sarama.ConsumerError {
+	return &sarama.ConsumerError{
+		Topic:     t.topic,
+		Partition: t.partition,
+		Err:       e,
+	}
+
 }
