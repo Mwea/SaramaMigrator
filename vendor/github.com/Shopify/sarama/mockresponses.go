@@ -334,15 +334,15 @@ func (mfr *MockFetchResponse) For(reqBody versionedDecoder) encoderWithHeader {
 		for partition, block := range partitions {
 			initialOffset := block.fetchOffset
 			offset := initialOffset
-			maxOffset := initialOffset + int64(mfr.getMessageCount(topic, partition))
-			for i := 0; i < mfr.batchSize && offset < maxOffset; {
-				msg := mfr.getMessage(topic, partition, offset)
-				if msg != nil {
-					res.AddMessage(topic, partition, nil, msg, offset)
-					i++
+			messages := mfr.getMessages(topic, partition)
+			if messages != nil {
+				for mOffset, message := range messages {
+					if mOffset >= offset {
+						res.AddMessage(topic, partition, nil, message, mOffset)
+					}
 				}
-				offset++
 			}
+
 			fb := res.GetBlock(topic, partition)
 			if fb == nil {
 				res.AddError(topic, partition, ErrNoError)
@@ -355,6 +355,18 @@ func (mfr *MockFetchResponse) For(reqBody versionedDecoder) encoderWithHeader {
 		}
 	}
 	return res
+}
+
+func (mfr *MockFetchResponse) getMessages(topic string, partition int32) map[int64]Encoder {
+	partitions := mfr.messages[topic]
+	if partitions == nil {
+		return nil
+	}
+	messages := partitions[partition]
+	if messages == nil {
+		return nil
+	}
+	return messages
 }
 
 func (mfr *MockFetchResponse) getMessage(topic string, partition int32, offset int64) Encoder {

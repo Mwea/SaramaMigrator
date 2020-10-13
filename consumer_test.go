@@ -347,6 +347,132 @@ func TestConsumerShutsDownOutOfRange(t *testing.T) {
 	broker0.Close()
 }
 
+// If a fetch response contains messages with offsets that are smaller then
+// requested, then such messages are ignored.
+func TestConsumerExtraOffsets(t *testing.T) {
+	go FailOnTimeout(t, 5*time.Second)
+	// Given
+	legacyFetchResponse := &sarama.FetchResponse{Version: 4}
+	legacyFetchResponse.AddMessage("my_topic", 0, nil, testMsg, 1)
+	legacyFetchResponse.AddMessage("my_topic", 0, nil, testMsg, 2)
+	legacyFetchResponse.AddMessage("my_topic", 0, nil, testMsg, 3)
+	legacyFetchResponse.AddMessage("my_topic", 0, nil, testMsg, 4)
+	newFetchResponse := &sarama.FetchResponse{Version: 4}
+	newFetchResponse.AddRecord("my_topic", 0, nil, testMsg, 1)
+	newFetchResponse.AddRecord("my_topic", 0, nil, testMsg, 2)
+	newFetchResponse.AddRecord("my_topic", 0, nil, testMsg, 3)
+	newFetchResponse.AddRecord("my_topic", 0, nil, testMsg, 4)
+	newFetchResponse.SetLastOffsetDelta("my_topic", 0, 4)
+	newFetchResponse.SetLastStableOffset("my_topic", 0, 4)
+	for _, fetchResponse1 := range []*sarama.FetchResponse{legacyFetchResponse, newFetchResponse} {
+
+		cfg := NewTestConfig()
+		cfg.Consumer.Return.Errors = true
+		if fetchResponse1.Version >= 4 {
+			cfg.Version = sarama.V0_11_0_0
+		}
+
+		broker0 := sarama.NewMockBroker(t, 0)
+		fetchResponse2 := &sarama.FetchResponse{}
+		fetchResponse2.Version = fetchResponse1.Version
+		fetchResponse2.AddError("my_topic", 0, sarama.ErrNoError)
+		broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+			"MetadataRequest": sarama.NewMockMetadataResponse(t).
+				SetBroker(broker0.Addr(), broker0.BrokerID()).
+				SetLeader("my_topic", 0, broker0.BrokerID()),
+			"OffsetRequest": sarama.NewMockOffsetResponse(t).
+				//SetVersion(offsetResponseVersion).
+				SetOffset("my_topic", 0, sarama.OffsetNewest, 1234).
+				SetOffset("my_topic", 0, sarama.OffsetOldest, 0),
+			"FetchRequest":       sarama.NewMockSequence(fetchResponse1, fetchResponse2),
+			"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+		})
+
+		master, err := NewTransitioningConsumer([]string{broker0.Addr()}, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// When
+		consumer, err := master.ConsumePartition("my_topic", 0, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Then: messages with offsets 1 and 2 are not returned even though they
+		// are present in the response.
+		select {
+		case msg := <-consumer.Messages():
+			assertMessageOffset(t, msg, 3)
+		case err := <-consumer.Errors():
+			t.Fatal(err)
+		}
+
+		select {
+		case msg := <-consumer.Messages():
+			assertMessageOffset(t, msg, 4)
+		case err := <-consumer.Errors():
+			t.Fatal(err)
+		}
+
+		safeClose(t, consumer)
+		safeClose(t, master)
+		broker0.Close()
+	}
+}
+
+// In some situations broker may return a block containing only
+// messages older then requested, even though there would be
+// more messages if higher offset was requested.
+func TestConsumerReceivingFetchResponseWithTooOldRecords(t *testing.T) {
+	// Given
+	fetchResponse1 := sarama.NewMockFetchResponse(t, 1).SetMessage("my_topic", 0, 1, testMsg).
+		SetVersion(4)
+		//SetHighWaterMark("my_topic", 0, 1)
+	fetchResponse2 := sarama.NewMockFetchResponse(t, 1).SetMessage("my_topic", 0, 1000000, testMsg).
+		SetVersion(4)
+		//SetHighWaterMark("my_topic", 0, 10000)
+
+	cfg := NewTestConfig()
+	cfg.Consumer.Return.Errors = true
+	cfg.Version = sarama.V0_11_0_0
+
+	broker0 := sarama.NewMockBroker(t, 0)
+
+	broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetBroker(broker0.Addr(), broker0.BrokerID()).
+			SetLeader("my_topic", 0, broker0.BrokerID()),
+		"OffsetRequest": sarama.NewMockOffsetResponse(t).
+			SetOffset("my_topic", 0, sarama.OffsetNewest, 1234).
+			SetOffset("my_topic", 0, sarama.OffsetOldest, 0),
+		"FetchRequest":       sarama.NewMockSequence(fetchResponse1, fetchResponse2),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	master, err := NewTransitioningConsumer([]string{broker0.Addr()}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When
+	consumer, err := master.ConsumePartition("my_topic", 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case msg := <-consumer.Messages():
+		assertMessageOffset(t, msg, 1000000)
+	case err := <-consumer.Errors():
+		t.Fatal(err)
+	}
+
+	safeClose(t, consumer)
+	safeClose(t, master)
+	broker0.Close()
+}
+
 // NewTestConfig returns a config meant to be used by tests.
 // Due to inconsistencies with the request versions the clients send using the default Kafka version
 // and the response versions our mocks use, we default to the minimum Kafka version in most tests
