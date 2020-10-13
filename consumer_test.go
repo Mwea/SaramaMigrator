@@ -279,6 +279,33 @@ func runConsumerLeaderRefreshErrorTestWithConfig(t *testing.T, config *sarama.Co
 	broker0.Close()
 }
 
+func TestConsumerInvalidTopic(t *testing.T) {
+	go FailOnTimeout(t, 5*time.Second)
+
+	// Given
+	broker0 := sarama.NewMockBroker(t, 100)
+	broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetBroker(broker0.Addr(), broker0.BrokerID()),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	c, err := NewTransitioningConsumer([]string{broker0.Addr()}, NewTestConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When
+	pc, err := c.ConsumePartition("my_topic", 0, sarama.OffsetOldest)
+
+	// Then
+	assert.Nil(t, pc)
+	assert.Equalf(t, err, sarama.ErrUnknownTopicOrPartition, "Should fail with, err=%v", err)
+
+	safeClose(t, c)
+	broker0.Close()
+}
+
 // NewTestConfig returns a config meant to be used by tests.
 // Due to inconsistencies with the request versions the clients send using the default Kafka version
 // and the response versions our mocks use, we default to the minimum Kafka version in most tests

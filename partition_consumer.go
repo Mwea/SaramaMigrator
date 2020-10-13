@@ -21,6 +21,12 @@ func newTransitioningPartitionConsumer(topic string, partition int32, offset int
 	if err != nil {
 		return nil, err
 	}
+	meta, err := consumer.GetMetadata(&topic, false, 1000)
+	if err != nil {
+		return nil, err
+	} else if _, ok := meta.Topics[topic]; !ok {
+		return nil, sarama.ErrUnknownTopicOrPartition
+	}
 	offset, err = pickOffset(consumer, topic, partition, offset)
 	if err != nil {
 		return nil, err
@@ -145,5 +151,4 @@ func (t *TransitioningPartitionConsumer) kafkaErrorToSaramaError(e kafka.Error) 
 		Partition: t.partition,
 		Err:       e,
 	}
-
 }
