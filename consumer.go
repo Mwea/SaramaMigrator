@@ -21,7 +21,8 @@ func NewTransitioningConsumer(addrs []string, saramaConfig *sarama.Config) (sara
 		saramaConfig = sarama.NewConfig()
 	}
 	configMap := &kafka.ConfigMap{
-		"bootstrap.servers":        strings.Join(addrs, ","),
+		"bootstrap.servers": strings.Join(addrs, ","),
+		// TODO: support setting consumer groups from sarama config
 		"group.id":                 "toto",
 		"auto.offset.reset":        "error",
 		"go.events.channel.enable": true,

@@ -10,3 +10,4 @@ development and should not be used in production.
 - Make all tests from sarama library pass 
 - Support sarama consumer interceptors
 - add additional tests for unused methods
+- Support feature to easily commit messages that got read 
