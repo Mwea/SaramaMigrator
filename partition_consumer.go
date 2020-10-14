@@ -8,16 +8,18 @@ import (
 )
 
 type TransitioningPartitionConsumer struct {
-	partition   int32
-	topic       string
-	messages    chan *sarama.ConsumerMessage
-	errors      chan *sarama.ConsumerError
-	ckgConsumer *kafka.Consumer
-	stopper     *Stopper
-	parent      *TransitioningConsumer
+	partition    int32
+	topic        string
+	messages     chan *sarama.ConsumerMessage
+	errors       chan *sarama.ConsumerError
+	ckgConsumer  *kafka.Consumer
+	stopper      *Stopper
+	parent       *TransitioningConsumer
+	saramaConfig *sarama.Config
+	term         chan bool
 }
 
-func newTransitioningPartitionConsumer(topic string, partition int32, offset int64, configMap *kafka.ConfigMap) (*TransitioningPartitionConsumer, error) {
+func newTransitioningPartitionConsumer(topic string, partition int32, offset int64, configMap *kafka.ConfigMap, saramaConfig *sarama.Config) (*TransitioningPartitionConsumer, error) {
 	consumer, err := kafka.NewConsumer(configMap)
 	if err != nil {
 		return nil, err
@@ -43,12 +45,14 @@ func newTransitioningPartitionConsumer(topic string, partition int32, offset int
 		return nil, err
 	}
 	obj := &TransitioningPartitionConsumer{
-		topic:       topic,
-		ckgConsumer: consumer,
-		messages:    make(chan *sarama.ConsumerMessage),
-		errors:      make(chan *sarama.ConsumerError),
-		partition:   partition,
-		stopper:     NewStopper(),
+		topic:        topic,
+		ckgConsumer:  consumer,
+		messages:     make(chan *sarama.ConsumerMessage, saramaConfig.ChannelBufferSize),
+		errors:       make(chan *sarama.ConsumerError),
+		partition:    partition,
+		stopper:      NewStopper(),
+		saramaConfig: saramaConfig,
+		term:         make(chan bool),
 	}
 	obj.run()
 	return obj, nil
@@ -72,47 +76,56 @@ func pickOffset(consumer *kafka.Consumer, topic string, partition int32, offset 
 }
 
 func (t *TransitioningPartitionConsumer) run() {
+	go func() {
+		for {
+			switch {
+			case <-t.term:
+				if err := t.ckgConsumer.Unassign(); err != nil {
+					return
+				}
+				t.ckgConsumer.Close()
+				close(t.messages)
+				close(t.errors)
+			}
+		}
+	}()
+
 	t.stopper.Add(1)
 	go func() {
-		defer t.ckgConsumer.Close()
-		defer close(t.messages)
-		defer close(t.errors)
 		defer t.stopper.Done()
+	msgLoop:
 		for {
 			if t.stopper.Stopped() {
-				return
+				break
 			}
-			ev := t.ckgConsumer.Poll(int(sarama.NewConfig().Consumer.MaxWaitTime.Milliseconds()))
+			ev := <-t.ckgConsumer.Events()
 			switch e := ev.(type) {
 			case *kafka.Message:
 				if e.TopicPartition.Error != nil {
+					fmt.Println("WESH JE SUIS LA")
 					continue
 				}
 				t.messages <- t.kafkaMessageToSaramaMessage(e)
 			case kafka.Error:
 				switch sarama.KError(e.Code()) {
 				case sarama.ErrOffsetOutOfRange:
-					t.AsyncClose()
+					break msgLoop
 				default:
-					t.errors <- t.kafkaErrorToSaramaError(e)
+					if t.saramaConfig.Consumer.Return.Errors {
+						t.errors <- t.kafkaErrorToSaramaError(e)
+					}
 				}
 			default:
 				fmt.Println(e)
 				// Ignore other event types
 			}
 		}
+		t.term <- true
 	}()
-
 }
 
 func (t *TransitioningPartitionConsumer) AsyncClose() {
-	if t.stopper.Stopped() {
-		return
-	}
 	t.parent.removeChild(t)
-	if err := t.ckgConsumer.Unassign(); err != nil {
-		return
-	}
 	t.stopper.Stop()
 }
 

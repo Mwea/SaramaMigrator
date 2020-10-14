@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,10 +14,6 @@ import (
 )
 
 var testMsg = StringEncoder("Foo")
-
-func init() {
-	sarama.Logger = log.New(os.Stdout, "[sarama] ", log.LstdFlags)
-}
 
 // If a particular offset is provided then messages are consumed starting from
 // that offset.
@@ -247,10 +244,6 @@ func runConsumerLeaderRefreshErrorTestWithConfig(t *testing.T, config *sarama.Co
 		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
 	})
 
-	if consErr := <-pc.Errors(); consErr.Err != sarama.ErrOutOfBrokers {
-		t.Errorf("Unexpected error: %v", consErr.Err)
-	}
-
 	// Stage 3: finally the metadata returned by broker0 tells that broker1 is
 	// a new leader for my_topic/0. Consumption resumes.
 
@@ -290,7 +283,7 @@ func TestConsumerInvalidTopic(t *testing.T) {
 		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
 	})
 
-	c, err := NewTransitioningConsumer([]string{broker0.Addr()}, NewTestConfig())
+	c, err := NewTransitioningConsumer([]string{broker0.Addr()}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +319,7 @@ func TestConsumerShutsDownOutOfRange(t *testing.T) {
 		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
 	})
 
-	master, err := NewTransitioningConsumer([]string{broker0.Addr()}, NewTestConfig())
+	master, err := NewTransitioningConsumer([]string{broker0.Addr()}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,6 +418,8 @@ func TestConsumerExtraOffsets(t *testing.T) {
 // messages older then requested, even though there would be
 // more messages if higher offset was requested.
 func TestConsumerReceivingFetchResponseWithTooOldRecords(t *testing.T) {
+	go FailOnTimeout(t, 30*time.Second)
+
 	// Given
 	fetchResponse1 := sarama.NewMockFetchResponse(t, 1).SetMessage("my_topic", 0, 1, testMsg).
 		SetVersion(4)
@@ -474,6 +469,8 @@ func TestConsumerReceivingFetchResponseWithTooOldRecords(t *testing.T) {
 }
 
 func TestConsumerNonSequentialOffsets(t *testing.T) {
+	go FailOnTimeout(t, 30*time.Second)
+
 	// Given
 	legacyFetchResponse := &sarama.FetchResponse{Version: 4}
 	legacyFetchResponse.AddMessage("my_topic", 0, nil, testMsg, 5)
@@ -527,6 +524,8 @@ func TestConsumerNonSequentialOffsets(t *testing.T) {
 
 // TODO
 func TestConsumerOffsetOutOfRange(t *testing.T) {
+	go FailOnTimeout(t, 30*time.Second)
+
 	// Given
 	broker0 := sarama.NewMockBroker(t, 2)
 	broker0.SetHandlerByMap(map[string]sarama.MockResponse{
@@ -561,6 +560,8 @@ func TestConsumerOffsetOutOfRange(t *testing.T) {
 
 // TODO
 func TestConsumerTimestamps(t *testing.T) {
+	go FailOnTimeout(t, 30*time.Second)
+
 	now := time.Now().Truncate(time.Millisecond)
 	type testMessage struct {
 		key       Encoder
@@ -676,6 +677,8 @@ func TestConsumerTimestamps(t *testing.T) {
 // When set to sarama.ReadCommitted, no uncommitted message should be available in messages channel
 // TODO
 func TestExcludeUncommitted(t *testing.T) {
+	go FailOnTimeout(t, 30*time.Second)
+
 	// Given
 	broker0 := sarama.NewMockBroker(t, 0)
 
@@ -696,7 +699,6 @@ func TestExcludeUncommitted(t *testing.T) {
 			SetBroker(broker0.Addr(), broker0.BrokerID()).
 			SetLeader("my_topic", 0, broker0.BrokerID()),
 		"OffsetRequest": sarama.NewMockOffsetResponse(t).
-			SetVersion(1).
 			SetOffset("my_topic", 0, sarama.OffsetOldest, 0).
 			SetOffset("my_topic", 0, sarama.OffsetNewest, 1237),
 		"FetchRequest":       sarama.NewMockWrapper(fetchResponse),
@@ -747,6 +749,54 @@ func NewTestConfig() *sarama.Config {
 	return config
 }
 
+// TODO
+func TestConsumerExpiryTicker(t *testing.T) {
+	go FailOnTimeout(t, 30*time.Second)
+
+	// Given
+	broker0 := sarama.NewMockBroker(t, 0)
+	fetchResponse1 := &sarama.FetchResponse{Version: 4}
+	for i := 1; i <= 8; i++ {
+		fetchResponse1.AddMessage("my_topic", 0, nil, testMsg, int64(i))
+	}
+	broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetBroker(broker0.Addr(), broker0.BrokerID()).
+			SetLeader("my_topic", 0, broker0.BrokerID()),
+		"OffsetRequest": sarama.NewMockOffsetResponse(t).
+			SetOffset("my_topic", 0, sarama.OffsetNewest, 1234).
+			SetOffset("my_topic", 0, sarama.OffsetOldest, 1),
+		"FetchRequest":       sarama.NewMockSequence(fetchResponse1),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	config := NewTestConfig()
+	config.ChannelBufferSize = 0
+	config.Consumer.MaxProcessingTime = 10 * time.Millisecond
+
+	master, err := NewTransitioningConsumer([]string{broker0.Addr()}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When
+	consumer, err := master.ConsumePartition("my_topic", 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then: messages with offsets 1 through 8 are read
+	for i := 1; i <= 8; i++ {
+		assertMessageOffset(t, <-consumer.Messages(), int64(i))
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	safeClose(t, consumer)
+	safeClose(t, master)
+	broker0.Close()
+	t.Fatal("Not sure about the implementation of this test")
+}
+
 // If consumer fails to refresh metadata it keeps retrying with frequency
 // specified by `Config.Consumer.Retry.Backoff`.
 func TestConsumerLeaderRefreshError(t *testing.T) {
@@ -781,6 +831,342 @@ func TestConsumerLeaderRefreshErrorWithBackoffFunc(t *testing.T) {
 	}
 }
 
+// If leadership for a partition is changing then consumer resolves the new
+// leader and switches to it.
+// TODO
+func TestConsumerRebalancingMultiplePartitions(t *testing.T) {
+	go FailOnTimeout(t, 30*time.Second)
+
+	// initial setup
+	seedBroker := sarama.NewMockBroker(t, 10)
+	leader0 := sarama.NewMockBroker(t, 0)
+	leader1 := sarama.NewMockBroker(t, 1)
+
+	seedBroker.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetBroker(leader0.Addr(), leader0.BrokerID()).
+			SetBroker(leader1.Addr(), leader1.BrokerID()).
+			SetBroker(seedBroker.Addr(), seedBroker.BrokerID()).
+			SetLeader("my_topic", 0, leader0.BrokerID()).
+			SetLeader("my_topic", 1, leader1.BrokerID()),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	mockOffsetResponse1 := sarama.NewMockOffsetResponse(t).
+		SetOffset("my_topic", 0, sarama.OffsetOldest, 0).
+		SetOffset("my_topic", 0, sarama.OffsetNewest, 1000).
+		SetOffset("my_topic", 1, sarama.OffsetOldest, 0).
+		SetOffset("my_topic", 1, sarama.OffsetNewest, 1000)
+	leader0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"OffsetRequest":      mockOffsetResponse1,
+		"FetchRequest":       sarama.NewMockFetchResponse(t, 1).SetVersion(4),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+	leader1.SetHandlerByMap(map[string]sarama.MockResponse{
+		"OffsetRequest":      mockOffsetResponse1,
+		"FetchRequest":       sarama.NewMockFetchResponse(t, 1).SetVersion(4),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	// launch test goroutines
+	config := NewTestConfig()
+	config.Consumer.Retry.Backoff = 50
+	master, err := NewTransitioningConsumer([]string{seedBroker.Addr()}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// we expect to end up (eventually) consuming exactly ten messages on each partition
+	var wg sync.WaitGroup
+	for i := int32(0); i < 2; i++ {
+		consumer, err := master.ConsumePartition("my_topic", i, 0)
+		if err != nil {
+			t.Error(err)
+		}
+
+		go func(c sarama.PartitionConsumer) {
+			for err := range c.Errors() {
+				t.Error(err)
+			}
+		}(consumer)
+
+		wg.Add(1)
+		go func(partition int32, c sarama.PartitionConsumer) {
+			for i := 0; i < 10; i++ {
+				message := <-consumer.Messages()
+				if message.Offset != int64(i) {
+					t.Error("Incorrect message offset!", i, partition, message.Offset)
+				}
+				if message.Partition != partition {
+					t.Error("Incorrect message partition!")
+				}
+			}
+			safeClose(t, consumer)
+			wg.Done()
+		}(i, consumer)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	sarama.Logger.Printf("    STAGE 1")
+	// Stage 1:
+	//   * my_topic/0 -> leader0 serves 4 messages
+	//   * my_topic/1 -> leader1 serves 0 messages
+
+	mockFetchResponse := sarama.NewMockFetchResponse(t, 1)
+	for i := 0; i < 4; i++ {
+		mockFetchResponse.SetMessage("my_topic", 0, int64(i), testMsg).SetVersion(4)
+	}
+	leader0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"FetchRequest":       mockFetchResponse,
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	sarama.Logger.Printf("    STAGE 2")
+	// Stage 2:
+	//   * leader0 says that it is no longer serving my_topic/0
+	//   * seedBroker tells that leader1 is serving my_topic/0 now
+
+	// seed broker tells that the new partition 0 leader is leader1
+	seedBroker.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetLeader("my_topic", 0, leader1.BrokerID()).
+			SetLeader("my_topic", 1, leader1.BrokerID()).
+			SetBroker(leader0.Addr(), leader0.BrokerID()).
+			SetBroker(leader1.Addr(), leader1.BrokerID()).
+			SetBroker(seedBroker.Addr(), seedBroker.BrokerID()),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	// leader0 says no longer leader of partition 0
+	fetchResponse := sarama.NewMockFetchResponse(t, 1).SetError("my_topic", 0, sarama.ErrNotLeaderForPartition).SetVersion(4)
+	leader0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"FetchRequest":       fetchResponse,
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	sarama.Logger.Printf("    STAGE 3")
+	// Stage 3:
+	//   * my_topic/0 -> leader1 serves 3 messages
+	//   * my_topic/1 -> leader1 server 8 messages
+
+	// leader1 provides 3 message on partition 0, and 8 messages on partition 1
+	mockFetchResponse2 := sarama.NewMockFetchResponse(t, 2).SetVersion(4)
+	for i := 4; i < 7; i++ {
+		mockFetchResponse2.SetMessage("my_topic", 0, int64(i), testMsg)
+	}
+	for i := 0; i < 8; i++ {
+		mockFetchResponse2.SetMessage("my_topic", 1, int64(i), testMsg)
+	}
+	leader1.SetHandlerByMap(map[string]sarama.MockResponse{
+		"FetchRequest":       mockFetchResponse2,
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	sarama.Logger.Printf("    STAGE 4")
+	// Stage 4:
+	//   * my_topic/0 -> leader1 serves 3 messages
+	//   * my_topic/1 -> leader1 tells that it is no longer the leader
+	//   * seedBroker tells that leader0 is a new leader for my_topic/1
+
+	// metadata assigns 0 to leader1 and 1 to leader0
+	seedBroker.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetLeader("my_topic", 0, leader1.BrokerID()).
+			SetLeader("my_topic", 1, leader0.BrokerID()).
+			SetBroker(leader0.Addr(), leader0.BrokerID()).
+			SetBroker(leader1.Addr(), leader1.BrokerID()).
+			SetBroker(seedBroker.Addr(), seedBroker.BrokerID()),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	// leader1 provides three more messages on partition0, says no longer leader of partition1
+	mockFetchResponse3 := sarama.NewMockFetchResponse(t, 3).SetVersion(4).
+		SetMessage("my_topic", 0, int64(7), testMsg).
+		SetMessage("my_topic", 0, int64(8), testMsg).
+		SetMessage("my_topic", 0, int64(9), testMsg)
+	fetchResponse4 := sarama.NewMockFetchResponse(t, 1).SetError("my_topic", 1, sarama.ErrNotLeaderForPartition).SetVersion(4)
+	leader1.SetHandlerByMap(map[string]sarama.MockResponse{
+		"FetchRequest":       sarama.NewMockSequence(mockFetchResponse3, fetchResponse4),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	// leader0 provides two messages on partition 1
+	mockFetchResponse4 := sarama.NewMockFetchResponse(t, 2).SetVersion(4)
+	for i := 8; i < 10; i++ {
+		mockFetchResponse4.SetMessage("my_topic", 1, int64(i), testMsg)
+	}
+	leader0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"FetchRequest":       mockFetchResponse4,
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	wg.Wait()
+	safeClose(t, master)
+	leader1.Close()
+	leader0.Close()
+	seedBroker.Close()
+}
+
+// When two partitions have the same broker as the leader, if one partition
+// consumer channel buffer is full then that does not affect the ability to
+// read messages by the other consumer.
+func TestConsumerInterleavedClose(t *testing.T) {
+	go FailOnTimeout(t, 30*time.Second)
+
+	// Given
+	broker0 := sarama.NewMockBroker(t, 0)
+	broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetBroker(broker0.Addr(), broker0.BrokerID()).
+			SetLeader("my_topic", 0, broker0.BrokerID()).
+			SetLeader("my_topic", 1, broker0.BrokerID()),
+		"OffsetRequest": sarama.NewMockOffsetResponse(t).
+			SetOffset("my_topic", 0, sarama.OffsetOldest, 1000).
+			SetOffset("my_topic", 0, sarama.OffsetNewest, 1100).
+			SetOffset("my_topic", 1, sarama.OffsetOldest, 2000).
+			SetOffset("my_topic", 1, sarama.OffsetNewest, 2100),
+		"FetchRequest": sarama.NewMockFetchResponse(t, 1).
+			SetMessage("my_topic", 0, 1000, testMsg).
+			SetMessage("my_topic", 0, 1001, testMsg).
+			SetMessage("my_topic", 0, 1002, testMsg).
+			SetMessage("my_topic", 1, 2000, testMsg),
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	config := NewTestConfig()
+	config.ChannelBufferSize = 0
+	master, err := NewTransitioningConsumer([]string{broker0.Addr()}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c0, err := master.ConsumePartition("my_topic", 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c1, err := master.ConsumePartition("my_topic", 1, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When/Then: we can read from partition 0 even if nobody reads from partition 1
+	assertMessageOffset(t, <-c0.Messages(), 1000)
+	assertMessageOffset(t, <-c0.Messages(), 1001)
+	assertMessageOffset(t, <-c0.Messages(), 1002)
+
+	safeClose(t, c1)
+	safeClose(t, c0)
+	safeClose(t, master)
+	broker0.Close()
+}
+
+func TestConsumerBounceWithReferenceOpen(t *testing.T) {
+	go FailOnTimeout(t, 30*time.Second)
+
+	broker0 := sarama.NewMockBroker(t, 0)
+	broker0Addr := broker0.Addr()
+	broker1 := sarama.NewMockBroker(t, 1)
+
+	mockMetadataResponse := sarama.NewMockMetadataResponse(t).
+		SetBroker(broker0.Addr(), broker0.BrokerID()).
+		SetBroker(broker1.Addr(), broker1.BrokerID()).
+		SetLeader("my_topic", 0, broker0.BrokerID()).
+		SetLeader("my_topic", 1, broker1.BrokerID())
+
+	mockOffsetResponse := sarama.NewMockOffsetResponse(t).
+		SetOffset("my_topic", 0, sarama.OffsetOldest, 1000).
+		SetOffset("my_topic", 0, sarama.OffsetNewest, 1100).
+		SetOffset("my_topic", 1, sarama.OffsetOldest, 2000).
+		SetOffset("my_topic", 1, sarama.OffsetNewest, 2100)
+
+	mockFetchResponse := sarama.NewMockFetchResponse(t, 1)
+	for i := 0; i < 10; i++ {
+		mockFetchResponse.SetMessage("my_topic", 0, int64(1000+i), testMsg)
+		mockFetchResponse.SetMessage("my_topic", 1, int64(2000+i), testMsg)
+	}
+
+	broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"OffsetRequest":      mockOffsetResponse,
+		"FetchRequest":       mockFetchResponse,
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+	broker1.SetHandlerByMap(map[string]sarama.MockResponse{
+		"MetadataRequest":    mockMetadataResponse,
+		"OffsetRequest":      mockOffsetResponse,
+		"FetchRequest":       mockFetchResponse,
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	config := NewTestConfig()
+	config.Consumer.Return.Errors = true
+	config.Consumer.Retry.Backoff = 100 * time.Millisecond
+	config.ChannelBufferSize = 1
+	master, err := NewTransitioningConsumer([]string{broker1.Addr()}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c0, err := master.ConsumePartition("my_topic", 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c1, err := master.ConsumePartition("my_topic", 1, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// read messages from both partition to make sure that both brokers operate
+	// normally.
+	assertMessageOffset(t, <-c0.Messages(), 1000)
+	assertMessageOffset(t, <-c1.Messages(), 2000)
+
+	// Simulate broker shutdown. Note that metadata response does not change,
+	// that is the leadership does not move to another broker. So partition
+	// consumer will keep retrying to restore the connection with the broker.
+	broker0.Close()
+
+	// Make sure that while the partition/0 leader is down, consumer/partition/1
+	// is capable of pulling messages from broker1.
+	for i := 1; i < 7; i++ {
+		offset := (<-c1.Messages()).Offset
+		if offset != int64(2000+i) {
+			t.Errorf("Expected offset %d from consumer/partition/1", int64(2000+i))
+		}
+	}
+
+	// Bring broker0 back to service.
+	broker0 = sarama.NewMockBrokerAddr(t, 0, broker0Addr)
+	broker0.SetHandlerByMap(map[string]sarama.MockResponse{
+		"FetchRequest":       mockFetchResponse,
+		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
+	})
+
+	// Read the rest of messages from both partitions.
+	for i := 7; i < 10; i++ {
+		assertMessageOffset(t, <-c1.Messages(), int64(2000+i))
+	}
+	for i := 1; i < 10; i++ {
+		assertMessageOffset(t, <-c0.Messages(), int64(1000+i))
+	}
+
+	select {
+	case <-c0.Errors():
+	default:
+		t.Errorf("Partition consumer should have detected broker restart")
+	}
+
+	safeClose(t, c1)
+	safeClose(t, c0)
+	safeClose(t, master)
+	broker0.Close()
+	broker1.Close()
+}
+
 func assertMessageOffset(t *testing.T, msg *sarama.ConsumerMessage, expectedOffset int64) {
 	assert.Equalf(t, msg.Offset, expectedOffset, "Incorrect message offset: expected=%d, actual=%d", expectedOffset, msg.Offset)
 }
@@ -794,6 +1180,6 @@ func safeClose(t testing.TB, c io.Closer) {
 
 func FailOnTimeout(t *testing.T, d time.Duration) {
 	<-time.After(d)
-	//	t.Errorf("Failed because of timeout")
-	// panic("Failed because of timeout")
+	t.Errorf("Failed because of timeout")
+	panic("Failed because of timeout")
 }

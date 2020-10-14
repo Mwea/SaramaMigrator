@@ -9,26 +9,42 @@ import (
 )
 
 type TransitioningConsumer struct {
-	ckgConsumer *kafka.Consumer
-	configMap   *kafka.ConfigMap
-	lock        sync.Mutex
-	children    map[string]map[int32]*TransitioningPartitionConsumer
+	ckgConsumer  *kafka.Consumer
+	configMap    *kafka.ConfigMap
+	lock         sync.Mutex
+	children     map[string]map[int32]*TransitioningPartitionConsumer
+	saramaConfig *sarama.Config
 }
 
-func NewTransitioningConsumer(addrs []string, t interface{}) (sarama.Consumer, error) {
+func NewTransitioningConsumer(addrs []string, saramaConfig *sarama.Config) (sarama.Consumer, error) {
+	if saramaConfig == nil {
+		saramaConfig = sarama.NewConfig()
+	}
 	configMap := &kafka.ConfigMap{
-		"bootstrap.servers":  strings.Join(addrs, ","),
-		"group.id":           "toto",
-		"debug":              "all",
-		"log_level":          7,
-		"enable.auto.commit": false,
-		"auto.offset.reset":  "error",
+		"bootstrap.servers":        strings.Join(addrs, ","),
+		"group.id":                 "toto",
+		"debug":                    "all",
+		"auto.offset.reset":        "error",
+		"go.events.channel.enable": true,
+	}
+
+	err := configMap.SetKey("go.events.channel.size", saramaConfig.ChannelBufferSize)
+	if err != nil {
+		return nil, err
+	}
+	err = configMap.SetKey("broker.version.fallback", saramaConfig.Version.String())
+	if err != nil {
+		return nil, err
+	}
+	err = configMap.SetKey("session.timeout.ms", int(saramaConfig.Net.ReadTimeout.Milliseconds()))
+	if err != nil {
+		return nil, err
 	}
 	consumer, err := kafka.NewConsumer(configMap)
 	if err != nil {
 		return nil, err
 	}
-	return &TransitioningConsumer{ckgConsumer: consumer, configMap: configMap}, nil
+	return &TransitioningConsumer{ckgConsumer: consumer, configMap: configMap, saramaConfig: saramaConfig}, nil
 }
 
 // Topics returns the set of available topics as retrieved from the cluster
@@ -49,7 +65,7 @@ func (t *TransitioningConsumer) Partitions(topic string) ([]int32, error) {
 // on the given topic/partition. Offset can be a literal offset, or OffsetNewest
 // or OffsetOldest
 func (t *TransitioningConsumer) ConsumePartition(topic string, partition int32, offset int64) (sarama.PartitionConsumer, error) {
-	child, err := newTransitioningPartitionConsumer(topic, partition, offset, t.configMap)
+	child, err := newTransitioningPartitionConsumer(topic, partition, offset, t.configMap, t.saramaConfig)
 	if err != nil {
 		return nil, err
 	}
