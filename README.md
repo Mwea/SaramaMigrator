@@ -9,4 +9,4 @@ development and should not be used in production.
 - Implement method mapping sarama configuration to confluent-kafka-go configuration 
 - Make all tests from sarama library pass 
 - Support sarama consumer interceptors
-
+- add additional tests for unused methods
