@@ -50,13 +50,34 @@ func NewTransitioningConsumer(addrs []string, saramaConfig *sarama.Config) (sara
 // metadata. This method is the same as Client.Topics(), and is provided for
 // convenience.
 func (t *TransitioningConsumer) Topics() ([]string, error) {
-	return nil, fmt.Errorf("implement me")
+	metadata, err := t.ckgConsumer.GetMetadata(nil, true, 1000)
+	// todo cache metadata to avoid spamming the cluster
+	if err != nil {
+		return nil, err
+	}
+	topics := make([]string, 0, len(metadata.Topics))
+	for topic, _ := range metadata.Topics {
+		topics = append(topics, topic)
+	}
+	return topics, nil
 }
 
 // Partitions returns the sorted list of all partition IDs for the given topic.
 // This method is the same as Client.Partitions(), and is provided for convenience.
 func (t *TransitioningConsumer) Partitions(topic string) ([]int32, error) {
-	return nil, fmt.Errorf("implement me")
+	metadata, err := t.ckgConsumer.GetMetadata(&topic, false, 1000)
+	// todo cache metadata to avoid spamming the cluster
+	if err != nil {
+		return nil, err
+	}
+	if topicMetadata, ok := metadata.Topics[topic]; ok {
+		ids := make([]int32, 0, len(topicMetadata.Partitions))
+		for _, partitionMetadata := range topicMetadata.Partitions {
+			ids = append(ids, partitionMetadata.ID)
+		}
+		return ids, nil
+	}
+	return nil, fmt.Errorf("could not find metadata for topic %s", topic)
 }
 
 // ConsumePartition creates a PartitionConsumer on the given topic/partition with
@@ -77,7 +98,24 @@ func (t *TransitioningConsumer) ConsumePartition(topic string, partition int32, 
 // HighWaterMarks returns the current high water marks for each topic and partition.
 // Consistency between partitions is not guaranteed since high water marks are updated separately.
 func (t *TransitioningConsumer) HighWaterMarks() map[string]map[int32]int64 {
-	panic("implement me")
+	metadata, err := t.ckgConsumer.GetMetadata(nil, true, 1000)
+	if err != nil {
+		return nil
+	}
+	highWatermarks := make(map[string]map[int32]int64, len(metadata.Topics))
+	for topic, data := range metadata.Topics {
+		topicWatermarks := make(map[int32]int64, len(data.Partitions))
+		for _, partition := range data.Partitions {
+			_, high, err := t.ckgConsumer.GetWatermarkOffsets(topic, partition.ID)
+			if err != nil {
+				return nil
+			}
+			topicWatermarks[partition.ID] = high
+		}
+		highWatermarks[topic] = topicWatermarks
+	}
+
+	return highWatermarks
 }
 
 // Close shuts down the consumer. It must be called after all child
