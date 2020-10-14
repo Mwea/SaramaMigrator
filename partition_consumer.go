@@ -1,7 +1,6 @@
 package SaramaMigrator
 
 import (
-	"fmt"
 	"github.com/Shopify/sarama"
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 	"time"
@@ -24,16 +23,16 @@ func newTransitioningPartitionConsumer(topic string, partition int32, offset int
 	if err != nil {
 		return nil, err
 	}
-	meta, err := consumer.GetMetadata(&topic, false, 1000)
-	if err != nil {
+
+	if err := checkTopicExistence(topic, err, consumer); err != nil {
 		return nil, err
-	} else if _, ok := meta.Topics[topic]; !ok {
-		return nil, sarama.ErrUnknownTopicOrPartition
 	}
+
 	offset, err = pickOffset(consumer, topic, partition, offset)
 	if err != nil {
 		return nil, err
 	}
+
 	err = consumer.Assign([]kafka.TopicPartition{kafka.TopicPartition{
 		Topic:     &topic,
 		Partition: partition,
@@ -44,6 +43,7 @@ func newTransitioningPartitionConsumer(topic string, partition int32, offset int
 	if err != nil {
 		return nil, err
 	}
+
 	obj := &TransitioningPartitionConsumer{
 		topic:        topic,
 		ckgConsumer:  consumer,
@@ -56,6 +56,16 @@ func newTransitioningPartitionConsumer(topic string, partition int32, offset int
 	}
 	obj.run()
 	return obj, nil
+}
+
+func checkTopicExistence(topic string, err error, consumer *kafka.Consumer) error {
+	meta, err := consumer.GetMetadata(&topic, false, 1000)
+	if err != nil {
+		return err
+	} else if _, ok := meta.Topics[topic]; !ok {
+		return sarama.ErrUnknownTopicOrPartition
+	}
+	return nil
 }
 
 func pickOffset(consumer *kafka.Consumer, topic string, partition int32, offset int64) (int64, error) {
@@ -76,52 +86,57 @@ func pickOffset(consumer *kafka.Consumer, topic string, partition int32, offset 
 }
 
 func (t *TransitioningPartitionConsumer) run() {
-	go func() {
-		for {
-			switch {
-			case <-t.term:
-				if err := t.ckgConsumer.Unassign(); err != nil {
-					return
-				}
-				t.ckgConsumer.Close()
-				close(t.messages)
-				close(t.errors)
-			}
-		}
-	}()
+	go t.termLoop()
 
 	t.stopper.Add(1)
-	go func() {
-		defer t.stopper.Done()
-	msgLoop:
-		for {
-			if t.stopper.Stopped() {
-				break
+	go t.msgLoop()
+
+}
+
+func (t *TransitioningPartitionConsumer) termLoop() {
+	for {
+		switch {
+		case <-t.term:
+			if err := t.ckgConsumer.Unassign(); err != nil {
+				return
 			}
-			ev := <-t.ckgConsumer.Events()
-			switch e := ev.(type) {
-			case *kafka.Message:
-				if e.TopicPartition.Error != nil {
-					fmt.Println("WESH JE SUIS LA")
-					continue
-				}
-				t.messages <- t.kafkaMessageToSaramaMessage(e)
-			case kafka.Error:
-				switch sarama.KError(e.Code()) {
-				case sarama.ErrOffsetOutOfRange:
-					break msgLoop
-				default:
-					if t.saramaConfig.Consumer.Return.Errors {
-						t.errors <- t.kafkaErrorToSaramaError(e)
-					}
-				}
-			default:
-				fmt.Println(e)
-				// Ignore other event types
-			}
+			t.ckgConsumer.Close()
+			close(t.messages)
+			close(t.errors)
 		}
-		t.term <- true
-	}()
+	}
+}
+
+func (t *TransitioningPartitionConsumer) msgLoop() {
+	defer t.stopper.Done()
+msgLoop:
+	for {
+		if t.stopper.Stopped() {
+			break
+		}
+		ev := <-t.ckgConsumer.Events()
+		switch e := ev.(type) {
+		case *kafka.Message:
+			if e.TopicPartition.Error != nil {
+				// Todo: catch me
+				continue
+			}
+			t.messages <- t.kafkaMessageToSaramaMessage(e)
+		case kafka.Error:
+			switch sarama.KError(e.Code()) {
+			case sarama.ErrOffsetOutOfRange:
+				break msgLoop
+			default:
+				if t.saramaConfig.Consumer.Return.Errors {
+					t.errors <- t.kafkaErrorToSaramaError(e)
+				}
+			}
+		default:
+			// Todo: catch me
+			// Ignore other event types
+		}
+	}
+	t.term <- true
 }
 
 func (t *TransitioningPartitionConsumer) AsyncClose() {
