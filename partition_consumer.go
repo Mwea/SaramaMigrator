@@ -48,7 +48,7 @@ func newTransitioningPartitionConsumer(topic string, partition int32, offset int
 		topic:        topic,
 		ckgConsumer:  consumer,
 		messages:     make(chan *sarama.ConsumerMessage, saramaConfig.ChannelBufferSize),
-		errors:       make(chan *sarama.ConsumerError),
+		errors:       make(chan *sarama.ConsumerError, saramaConfig.ChannelBufferSize),
 		partition:    partition,
 		stopper:      NewStopper(),
 		saramaConfig: saramaConfig,

@@ -527,7 +527,6 @@ func TestConsumerNonSequentialOffsets(t *testing.T) {
 	}
 }
 
-// TODO
 func TestConsumerOffsetOutOfRange(t *testing.T) {
 	go FailOnTimeout(t, 30*time.Second)
 
@@ -563,7 +562,6 @@ func TestConsumerOffsetOutOfRange(t *testing.T) {
 	broker0.Close()
 }
 
-// TODO
 func TestConsumerTimestamps(t *testing.T) {
 	go FailOnTimeout(t, 30*time.Second)
 
@@ -680,7 +678,6 @@ func TestConsumerTimestamps(t *testing.T) {
 }
 
 // When set to sarama.ReadCommitted, no uncommitted message should be available in messages channel
-// TODO
 func TestExcludeUncommitted(t *testing.T) {
 	go FailOnTimeout(t, 30*time.Second)
 
@@ -838,7 +835,6 @@ func TestConsumerLeaderRefreshErrorWithBackoffFunc(t *testing.T) {
 
 // If leadership for a partition is changing then consumer resolves the new
 // leader and switches to it.
-// TODO
 func TestConsumerRebalancingMultiplePartitions(t *testing.T) {
 	go FailOnTimeout(t, 30*time.Second)
 
@@ -1043,7 +1039,8 @@ func TestConsumerInterleavedClose(t *testing.T) {
 			SetMessage("my_topic", 0, 1000, testMsg).
 			SetMessage("my_topic", 0, 1001, testMsg).
 			SetMessage("my_topic", 0, 1002, testMsg).
-			SetMessage("my_topic", 1, 2000, testMsg),
+			SetMessage("my_topic", 1, 2000, testMsg).
+			SetVersion(4),
 		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
 	})
 
@@ -1094,7 +1091,7 @@ func TestConsumerBounceWithReferenceOpen(t *testing.T) {
 		SetOffset("my_topic", 1, sarama.OffsetOldest, 2000).
 		SetOffset("my_topic", 1, sarama.OffsetNewest, 2100)
 
-	mockFetchResponse := sarama.NewMockFetchResponse(t, 1)
+	mockFetchResponse := sarama.NewMockFetchResponse(t, 1).SetVersion(4)
 	for i := 0; i < 10; i++ {
 		mockFetchResponse.SetMessage("my_topic", 0, int64(1000+i), testMsg)
 		mockFetchResponse.SetMessage("my_topic", 1, int64(2000+i), testMsg)
@@ -1165,8 +1162,11 @@ func TestConsumerBounceWithReferenceOpen(t *testing.T) {
 		assertMessageOffset(t, <-c0.Messages(), int64(1000+i))
 	}
 
+	time.Sleep(50 * time.Millisecond)
+
 	select {
-	case <-c0.Errors():
+	case err := <-c0.Errors():
+		fmt.Printf("error %s\n", err)
 	default:
 		t.Errorf("Partition consumer should have detected broker restart")
 	}
