@@ -1,6 +1,7 @@
 package SaramaMigrator
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -12,6 +13,10 @@ import (
 	"github.com/Shopify/sarama"
 	"github.com/stretchr/testify/assert"
 )
+
+func testMsgGen(s string) StringEncoder {
+	return StringEncoder(s)
+}
 
 var testMsg = StringEncoder("Foo")
 
@@ -811,7 +816,7 @@ func TestConsumerLeaderRefreshError(t *testing.T) {
 }
 
 func TestConsumerLeaderRefreshErrorWithBackoffFunc(t *testing.T) {
-	go FailOnTimeout(t, 5*time.Second)
+	go FailOnTimeout(t, 30*time.Second)
 
 	var calls int32 = 0
 	config := NewTestConfig()
@@ -906,23 +911,23 @@ func TestConsumerRebalancingMultiplePartitions(t *testing.T) {
 		}(i, consumer)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-	sarama.Logger.Printf("    STAGE 1")
+	time.Sleep(2000 * time.Millisecond)
+	fmt.Println("    STAGE 1")
 	// Stage 1:
 	//   * my_topic/0 -> leader0 serves 4 messages
 	//   * my_topic/1 -> leader1 serves 0 messages
 
 	mockFetchResponse := sarama.NewMockFetchResponse(t, 1)
 	for i := 0; i < 4; i++ {
-		mockFetchResponse.SetMessage("my_topic", 0, int64(i), testMsg).SetVersion(4)
+		mockFetchResponse.SetMessage("my_topic", 0, int64(i), testMsgGen(fmt.Sprintf("stage 1 partition 0 %d", i))).SetVersion(4)
 	}
 	leader0.SetHandlerByMap(map[string]sarama.MockResponse{
 		"FetchRequest":       mockFetchResponse,
 		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
 	})
 
-	time.Sleep(50 * time.Millisecond)
-	sarama.Logger.Printf("    STAGE 2")
+	time.Sleep(2000 * time.Millisecond)
+	fmt.Println("    STAGE 2")
 	// Stage 2:
 	//   * leader0 says that it is no longer serving my_topic/0
 	//   * seedBroker tells that leader1 is serving my_topic/0 now
@@ -941,12 +946,18 @@ func TestConsumerRebalancingMultiplePartitions(t *testing.T) {
 	// leader0 says no longer leader of partition 0
 	fetchResponse := sarama.NewMockFetchResponse(t, 1).SetError("my_topic", 0, sarama.ErrNotLeaderForPartition).SetVersion(4)
 	leader0.SetHandlerByMap(map[string]sarama.MockResponse{
-		"FetchRequest":       fetchResponse,
+		"FetchRequest": fetchResponse,
+		"MetadataRequest": sarama.NewMockMetadataResponse(t).
+			SetLeader("my_topic", 0, leader1.BrokerID()).
+			SetLeader("my_topic", 1, leader1.BrokerID()).
+			SetBroker(leader0.Addr(), leader0.BrokerID()).
+			SetBroker(leader1.Addr(), leader1.BrokerID()).
+			SetBroker(seedBroker.Addr(), seedBroker.BrokerID()),
 		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
 	})
 
-	time.Sleep(50 * time.Millisecond)
-	sarama.Logger.Printf("    STAGE 3")
+	time.Sleep(4000 * time.Millisecond)
+	fmt.Println("    STAGE 3")
 	// Stage 3:
 	//   * my_topic/0 -> leader1 serves 3 messages
 	//   * my_topic/1 -> leader1 server 8 messages
@@ -954,18 +965,18 @@ func TestConsumerRebalancingMultiplePartitions(t *testing.T) {
 	// leader1 provides 3 message on partition 0, and 8 messages on partition 1
 	mockFetchResponse2 := sarama.NewMockFetchResponse(t, 2).SetVersion(4)
 	for i := 4; i < 7; i++ {
-		mockFetchResponse2.SetMessage("my_topic", 0, int64(i), testMsg)
+		mockFetchResponse2.SetMessage("my_topic", 0, int64(i), testMsgGen(fmt.Sprintf("stage 3 partition 0 %d", i)))
 	}
 	for i := 0; i < 8; i++ {
-		mockFetchResponse2.SetMessage("my_topic", 1, int64(i), testMsg)
+		mockFetchResponse2.SetMessage("my_topic", 1, int64(i), testMsgGen(fmt.Sprintf("stage 3 partition 1 %d", i)))
 	}
 	leader1.SetHandlerByMap(map[string]sarama.MockResponse{
 		"FetchRequest":       mockFetchResponse2,
 		"ApiVersionsRequest": sarama.NewMockApiVersionsResponse(t),
 	})
 
-	time.Sleep(50 * time.Millisecond)
-	sarama.Logger.Printf("    STAGE 4")
+	time.Sleep(4000 * time.Millisecond)
+	fmt.Println("    STAGE 4")
 	// Stage 4:
 	//   * my_topic/0 -> leader1 serves 3 messages
 	//   * my_topic/1 -> leader1 tells that it is no longer the leader
@@ -984,9 +995,9 @@ func TestConsumerRebalancingMultiplePartitions(t *testing.T) {
 
 	// leader1 provides three more messages on partition0, says no longer leader of partition1
 	mockFetchResponse3 := sarama.NewMockFetchResponse(t, 3).SetVersion(4).
-		SetMessage("my_topic", 0, int64(7), testMsg).
-		SetMessage("my_topic", 0, int64(8), testMsg).
-		SetMessage("my_topic", 0, int64(9), testMsg)
+		SetMessage("my_topic", 0, int64(7), testMsgGen(fmt.Sprintf("stage 4 partition 0 %d", 7))).
+		SetMessage("my_topic", 0, int64(8), testMsgGen(fmt.Sprintf("stage 4 partition 0 %d", 8))).
+		SetMessage("my_topic", 0, int64(9), testMsgGen(fmt.Sprintf("stage 4 partition 0 %d", 9)))
 	fetchResponse4 := sarama.NewMockFetchResponse(t, 1).SetError("my_topic", 1, sarama.ErrNotLeaderForPartition).SetVersion(4)
 	leader1.SetHandlerByMap(map[string]sarama.MockResponse{
 		"FetchRequest":       sarama.NewMockSequence(mockFetchResponse3, fetchResponse4),
@@ -996,7 +1007,7 @@ func TestConsumerRebalancingMultiplePartitions(t *testing.T) {
 	// leader0 provides two messages on partition 1
 	mockFetchResponse4 := sarama.NewMockFetchResponse(t, 2).SetVersion(4)
 	for i := 8; i < 10; i++ {
-		mockFetchResponse4.SetMessage("my_topic", 1, int64(i), testMsg)
+		mockFetchResponse4.SetMessage("my_topic", 1, int64(i), testMsgGen(fmt.Sprintf("stage 4 partition 1 %d", i)))
 	}
 	leader0.SetHandlerByMap(map[string]sarama.MockResponse{
 		"FetchRequest":       mockFetchResponse4,
